@@ -1,0 +1,175 @@
+from google.colab import drive
+drive.mount('/content/drive')
+
+import os
+import json
+import nltk
+import gradio as gr
+from nltk.corpus import stopwords
+from nltk.stem import SnowballStemmer
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+nltk.download('stopwords')  # Download stopwords jika belum diunduh
+
+# -----------------------------------------------
+# Setup Stop Words dan Stemmer
+# -----------------------------------------------
+stop_words = set(stopwords.words('english'))  # Mengambil stop words dalam bahasa Inggris
+stemmer = SnowballStemmer('english')  # Inisialisasi stemmer untuk bahasa Inggris
+
+# -----------------------------------------------
+# Menentukan Folder Path
+# -----------------------------------------------
+document_folder = 'Dataset'  # Path ke folder dataset
+
+# -----------------------------------------------
+# Fungsi untuk Mengambil Nama Penyakit dari Dataset
+# -----------------------------------------------
+def ambil_nama_penyakit_dari_dataset(folder_path):
+    daftar_penyakit = set()  # Set untuk menyimpan nama penyakit
+    
+    # Membaca setiap file dalam folder dataset
+    for filename in os.listdir(folder_path):
+        if filename.endswith(".txt") or filename.endswith(".json"):
+            # Ambil nama penyakit dari nama file
+            disease_name = filename.split('_')[0].lower()  # Ambil bagian sebelum underscore
+            daftar_penyakit.add(disease_name)  # Tambahkan nama penyakit ke set
+    
+    return daftar_penyakit  # Mengembalikan set nama penyakit
+
+# -----------------------------------------------
+# Ambil Daftar Penyakit
+# -----------------------------------------------
+daftar_penyakit = ambil_nama_penyakit_dari_dataset(document_folder)  # Mengambil nama penyakit dari dataset
+
+# -----------------------------------------------
+# Fungsi untuk Membaca Dokumen dari Folder
+# -----------------------------------------------
+def read_documents(folder_path):
+    docs = []  # List untuk menyimpan dokumen
+    for filename in os.listdir(folder_path):
+        if filename.endswith(".txt") or filename.endswith(".json"):
+            file_path = os.path.join(folder_path, filename)  # Mendapatkan path file
+            with open(file_path, 'r') as file:
+                doc = file.read()  # Membaca isi file
+                docs.append(doc)  # Menambahkan isi file ke list dokumen
+    return docs  # Mengembalikan list dokumen
+
+# -----------------------------------------------
+# Membaca Semua File .txt dan .json
+# -----------------------------------------------
+docs = read_documents(document_folder)
+
+# -----------------------------------------------
+# Pre-proses Dokumen (Menghapus Stop Words, Stemming)
+# -----------------------------------------------
+def preprocess_document(doc):
+    preprocessed_doc = []  # List untuk menyimpan kata-kata yang sudah diproses
+    for line in doc.split('\n'):
+        if ':' in line:
+            line = line.split(':')[1].strip()  # Mengambil bagian setelah label (misalnya "Disease Name:")
+        words = line.split()  # Memecah kalimat menjadi kata-kata
+        # Menghapus stop words dan menerapkan stemming
+        words = [word for word in words if word.lower() not in stop_words]
+        words = [stemmer.stem(word) for word in words]
+        preprocessed_doc.extend(words)  # Menambahkan kata-kata yang sudah diproses ke list
+    return ' '.join(preprocessed_doc)  # Mengembalikan dokumen yang sudah diproses sebagai string
+
+    # -----------------------------------------------
+    # Pre-process Semua Dokumen
+    # -----------------------------------------------
+    preprocessed_docs = [preprocess_document(doc) for doc in docs]  # Memproses setiap dokumen
+
+# -----------------------------------------------
+# Menghasilkan Matriks TF-IDF dari Istilah
+# -----------------------------------------------
+vectorizer = TfidfVectorizer()  # Inisialisasi vektorisasi TF-IDF
+tfidf_matrix = vectorizer.fit_transform(preprocessed_docs)  # Menghitung matriks TF-IDF
+
+# -----------------------------------------------
+# Fungsi untuk Mengekstrak Informasi dari Kuery
+# -----------------------------------------------
+def extract_query_info(query):
+    query = query.lower()  # Mengubah kuery menjadi huruf kecil
+    info_type = None
+    disease = None
+
+    # Menentukan tipe informasi yang diminta
+    if 'treatment' in query or 'perawatan' in query:
+        info_type = 'treatments'
+    elif 'symptom' in query or 'gejala' in query:
+        info_type = 'symptoms'
+    elif 'risk' in query or 'faktor risiko' in query:
+        info_type = 'risk_factors'
+    elif 'prevalence' in query or 'prevalensi' in query:
+        info_type = 'prevalence'
+    elif 'prevent' in query or 'pencegahan' in query:
+        info_type = 'preventive_measures'
+
+    # Mencari nama penyakit dalam kuery menggunakan daftar penyakit
+    for word in query.split():
+        if word in daftar_penyakit:
+            disease = word
+            break
+
+    return info_type, disease  # Mengembalikan tipe informasi dan nama penyakit yang ditemukan
+
+pip install gradio
+
+# -----------------------------------------------
+# Fungsi untuk Mencari Informasi Penyakit
+# -----------------------------------------------
+def search_disease_info(query):
+    info_type, disease = extract_query_info(query)  # Mengekstrak informasi dari kuery
+
+    # Pre-proses kuery
+    preprocessed_query = preprocess_document(query)
+
+    # Menghitung cosine similarity antara kuery dan setiap dokumen
+    cosine_similarities = tfidf_matrix.dot(
+        vectorizer.transform([preprocessed_query]).T).toarray().flatten()
+
+    # Mengambil indeks dari dokumen yang melebihi ambang batas similarity
+    threshold = 0.1
+    top_indices = [i for i, similarity in enumerate(cosine_similarities) if similarity > threshold]
+
+    # Jika tidak ada dokumen yang melampaui ambang batas, anggap query tidak relevan
+    if not top_indices:
+        return "Tidak ada informasi yang relevan terkait query yang diinputkan."
+    
+    results = []  # List untuk menyimpan hasil pencarian
+
+    for idx in top_indices:
+        doc = docs[idx]
+        disease_info = {}  # Dictionary untuk menyimpan informasi penyakit
+
+        for line in doc.split('\n'):
+            if ':' in line:
+                key, value = line.split(':', 1)
+                disease_info[key.strip().lower().replace(' ', '_')] = value.strip()
+
+        # Jika penyakit ditemukan, tambahkan hasil ke list
+        if disease and disease.lower() not in disease_info.get('disease_name', '').lower():
+            continue
+
+        if info_type:
+            if info_type in disease_info:
+                results.append(f"Untuk {disease_info['disease_name']}, {info_type.replace('_', ' ')} adalah: {disease_info[info_type]}")
+        else:
+            results.append(f"Informasi tentang {disease_info['disease_name']}:")
+            for key, value in disease_info.items():
+                results.append(f"{key.replace('_', ' ').title()}: {value}")
+
+    # Jika tidak ada hasil yang ditemukan, tambahkan pesan tidak relevan
+    if not results:
+        return "Tidak ada informasi yang relevan terkait query yang diinputkan."
+    
+    return '\n'.join(results)  # Mengembalikan hasil pencarian
+
+# -----------------------------------------------
+# Membuat Antarmuka Gradio
+# -----------------------------------------------
+iface = gr.Interface(fn=search_disease_info, inputs="text", outputs="text", 
+                     title="Pencarian Informasi Penyakit",
+                     description="Masukkan pertanyaan terkait penyakit untuk mendapatkan informasi seperti gejala, pengobatan, faktor risiko, dan lainnya. Ketik 'quit' untuk keluar.")
+iface.launch()
